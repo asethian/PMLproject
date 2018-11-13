@@ -1,0 +1,136 @@
+---
+title: "Practical Machine Learning Project"
+author: "Aram Sethian"
+date: "November 5, 2018"
+output: github_document
+---
+# INTRODUCTION
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+The following is an attempt to produce predictive models based on the Human Activity Recognition dataset (URL: http://groupware.les.inf.puc-rio.br/har). The goal is to accurately predict exercise classifications based on gyroscopic data collected from montoring devices. The exercise classifications are separated into the following: (A) exactly according to specification, (b) throwing elbows to the front, (C) lifting the dumbbell only halfway, (D) lowering the dumbbell only halfway, and (E) throwing hips to the front. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+## Practical Machine Learning Course Project
+library(caret); library(ggplot2); library(dplyr)
+
+## System optimization
+library(parallel); library(doParallel)
+## system optimization. https://rpubs.com/lgreski/improvingCaretPerformance
+cluster<-makeCluster(detectCores()-1)
+registerDoParallel(cluster)
+
+```
+
+
+## Preliminary work
+We begin by importing the training and testing data. The training data is sub-set into training and validation sets to better predict out-of-sample error. There is some preliminary cleaning to do, namely removing mostly NA columns (>95% of total) and variables that are not relevant to the model (subject, timestamps, windows). 
+
+```{r}
+training<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",na.strings=c("NA","#DIV/0!", ""))
+testing<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",na.strings=c("NA","#DIV/0!", ""))
+
+##Cleaning the data set by removing variables >95% observations NA. Also removing irrelevant columns like subject and time stamps.
+set.seed(11223)
+cleantrain<-training[,-160]
+cleantrain<-cleantrain[,colSums(is.na(cleantrain))<0.95*dim(cleantrain)[1]]
+cleantrain<-cleantrain[,-c(1:7)]
+cleantrain<-cbind(cleantrain,classe=training$classe)
+
+cleantest<-testing[,names(cleantrain)[-53]]
+
+## Creating a subset for training, testing sets.
+inTrain<-createDataPartition(y=cleantrain$classe,p=0.7,list=FALSE)
+cleantrain1<-cleantrain[inTrain,]
+cleantrain2<-cleantrain[-inTrain,]
+```
+
+## Preliminary Analysis
+The below further cleans the data set by looking for near zero variance variables with the nearZeroVar function, and for highly correlated variables with findCorrelation. There does not seem to be an issue with nil-variance variables, but there are 7 highly correlated variables that is removed from the set. PCA indicates that a high percentage of the data's variance can be explained by a subset of the data provided.
+
+```{r pressure}
+## near zero variance
+nzv<-nearZeroVar(cleantrain1[,-53],saveMetrics=TRUE)
+summary(nzv)
+
+## correlated predictors
+descrCor<-cor(cleantrain1[,-53])
+highcorrs<-findCorrelation(descrCor,cutoff=0.9)
+        ## features 10, 1, 9, 8, 31, 33, 18
+cleantrain1<-cleantrain1[,-highcorrs]
+
+cleantrain_pca<-preProcess(cleantrain1[,-53],method=c("center","scale","pca"))
+cleantrain_pca
+```
+
+## Fitting a linear model
+We begin by fitting a simple linear model against all the variables. A linear model in this case seems to achieve an R^2 of 0.5098. The model doesn't seem appropriate here given the non-linearity of the data.
+
+```{r}
+model1<-train(unclass(classe)~.,method="lm",data=cleantrain1)
+finmodel1<-model1$finalModel
+plot(finmodel1)
+summary(finmodel1)
+```
+
+## Finding better predictive models
+Below, we also try to fit models using methods such as random forest, linear discriminant analysis, and stochastic gradient boosting. We see that the accuracy increases considerably, with RF at 0.9911, LDA at 0.677655, and gradient boosting at 0.957.
+
+
+```{r}
+fitControl<-trainControl(method='cv', number=5,allowParallel=TRUE)
+model2<-train(classe~.,data=cleantrain1,trControl=fitControl,method="rf")
+model3<-train(classe~.,data=cleantrain1,trControl=fitControl,method="lda")
+model4<-train(classe~.,data=cleantrain1,trControl=fitControl,method="gbm",verbose=FALSE)
+
+print(model1)
+print(model2)
+print(model3)
+print(model4)
+```
+
+## Out of sample error
+Using the testing models on the training set below to check out of sample error.
+```{r}
+pred1<-predict(model1,cleantrain2)
+pred2<-predict(model2,cleantrain2)
+pred3<-predict(model3,cleantrain2)
+pred4<-predict(model4,cleantrain2)
+
+confusionMatrix(pred2,cleantrain2$classe)$overall[1]
+confusionMatrix(pred3,cleantrain2$classe)$overall[1]
+confusionMatrix(pred4,cleantrain2$classe)$overall[1]
+```
+
+## Choosing a model
+The most accurate model was trained with random forest. Note the model also implemented cross validation with 5 folds to limit overfitting.
+
+```{r}
+plot(model2,main="Accuracy")
+
+confusionMatrix(pred2,cleantrain2$classe)$table
+
+plot(model2$finalModel,main="Model error")
+```
+
+Finally, we take a look at the most important variables. 
+
+```{r}
+MostImpVars<-varImp(model2)
+print(MostImpVars)
+```
+
+# CONCLUSION
+Though computationally intensive, the random forest model seems to best fit the data. Thus we apply model2 to predict the outcomes in the test set.
+
+```{r}
+Test<-predict(model2,cleantest)
+Test
+```
+
+
+```{r echo=FALSE}
+stopCluster(cluster)
+```
+
+
